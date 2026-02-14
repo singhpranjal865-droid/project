@@ -15,19 +15,24 @@ router.post('/restock', authenticateToken, async (req, res) => {
 
         await client.query('BEGIN');
 
-        const comp = await client.query('SELECT * FROM components WHERE id = $1 FOR UPDATE', [component_id]);
-        if (comp.rows.length === 0) {
+        // Single UPDATE RETURNING replaces SELECT FOR UPDATE + separate UPDATE
+        const updateResult = await client.query(`
+            UPDATE components
+            SET working_stock = working_stock + $1,
+                procurement_count = procurement_count + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+            RETURNING *, (working_stock - $1) AS previous_stock
+        `, [quantity, component_id]);
+
+        if (updateResult.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Component not found' });
         }
 
-        const previousStock = comp.rows[0].working_stock;
-        const newStock = previousStock + quantity;
-
-        await client.query(
-            'UPDATE components SET working_stock = $1, procurement_count = procurement_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-            [newStock, component_id]
-        );
+        const updated = updateResult.rows[0];
+        const previousStock = updated.previous_stock;
+        const newStock = updated.working_stock;
 
         await client.query(
             'INSERT INTO procurement_log (component_id, quantity_added, previous_stock, new_stock) VALUES ($1, $2, $3, $4)',
@@ -36,10 +41,9 @@ router.post('/restock', authenticateToken, async (req, res) => {
 
         await client.query('COMMIT');
 
-        const updated = await pool.query('SELECT * FROM components WHERE id = $1', [component_id]);
         res.json({
             message: `Restocked ${quantity} units`,
-            component: updated.rows[0],
+            component: updated,
             previous_stock: previousStock,
             new_stock: newStock
         });
@@ -56,12 +60,12 @@ router.post('/restock', authenticateToken, async (req, res) => {
 router.get('/log', async (req, res) => {
     try {
         const result = await pool.query(`
-      SELECT pl.*, c.name as component_name, c.part_number
-      FROM procurement_log pl
-      JOIN components c ON c.id = pl.component_id
-      ORDER BY pl.procured_at DESC
-      LIMIT 100
-    `);
+            SELECT pl.*, c.name as component_name, c.part_number
+            FROM procurement_log pl
+            JOIN components c ON c.id = pl.component_id
+            ORDER BY pl.procured_at DESC
+            LIMIT 100
+        `);
         res.json(result.rows);
     } catch (err) {
         console.error('Procurement log error:', err);
@@ -73,12 +77,12 @@ router.get('/log', async (req, res) => {
 router.get('/scrap-log', async (req, res) => {
     try {
         const result = await pool.query(`
-      SELECT sl.*, c.name as component_name, c.part_number
-      FROM scrap_log sl
-      JOIN components c ON c.id = sl.component_id
-      ORDER BY sl.created_at DESC
-      LIMIT 100
-    `);
+            SELECT sl.*, c.name as component_name, c.part_number
+            FROM scrap_log sl
+            JOIN components c ON c.id = sl.component_id
+            ORDER BY sl.created_at DESC
+            LIMIT 100
+        `);
         res.json(result.rows);
     } catch (err) {
         console.error('Scrap log error:', err);

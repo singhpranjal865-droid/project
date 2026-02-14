@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
@@ -10,6 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -45,16 +47,43 @@ app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Initialize database and start server
+// Initialize database
 async function initDB() {
     try {
         const schemaSQL = fs.readFileSync(path.join(__dirname, '../db/schema.sql'), 'utf8');
-        await pool.query(schemaSQL);
-        console.log('Database schema initialized');
+
+        // Strip SQL comment lines, then split into individual statements
+        const cleanedSQL = schemaSQL
+            .split('\n')
+            .filter(line => !line.trim().startsWith('--'))
+            .join('\n');
+
+        const statements = cleanedSQL
+            .split(';')
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+
+        let successCount = 0;
+        for (const statement of statements) {
+            try {
+                await pool.query(statement);
+                successCount++;
+            } catch (stmtErr) {
+                // 42P07 = relation already exists, 42710 = type/object already exists
+                if (stmtErr.code === '42P07' || stmtErr.code === '42710') {
+                    successCount++;
+                    continue;
+                }
+                // Log the actual failing statement for debugging
+                const preview = statement.substring(0, 60).replace(/\s+/g, ' ');
+                console.error(`Schema error in "${preview}...": ${stmtErr.message}`);
+            }
+        }
+        console.log(`Database schema initialized (${successCount}/${statements.length} statements ok)`);
 
         const seedSQL = fs.readFileSync(path.join(__dirname, '../db/seed.sql'), 'utf8');
         await pool.query(seedSQL);
-        console.log('Database seeded');
+        console.log('Database seed checked');
     } catch (err) {
         console.error('Database initialization error:', err.message);
         console.log('Make sure PostgreSQL is running and the database exists.');
@@ -62,9 +91,16 @@ async function initDB() {
     }
 }
 
+// Start server - always start even if DB init has issues (API will return errors for DB operations)
 initDB().then(() => {
     app.listen(PORT, () => {
         console.log(`PCB Inventory Server running on http://localhost:${PORT}`);
+    }).on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`Port ${PORT} is already in use. Kill the existing process or use a different port.`);
+            process.exit(1);
+        }
+        throw err;
     });
 });
 

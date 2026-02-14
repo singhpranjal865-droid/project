@@ -24,18 +24,23 @@ async function getComponentRequirement(componentId) {
 router.get('/', async (req, res) => {
     try {
         const result = await pool.query(`
-      SELECT c.*,
-        COALESCE((
-          SELECT SUM(pc.quantity_per_pcb * CASE WHEN p.preorder_quantity > 0 THEN p.preorder_quantity ELSE 1 END)
-          FROM pcb_components pc JOIN pcbs p ON p.id = pc.pcb_id
-          WHERE pc.component_id = c.id
-        ), 0) as total_requirement,
-        COALESCE((
-          SELECT COUNT(DISTINCT pc.pcb_id) FROM pcb_components pc WHERE pc.component_id = c.id
-        ), 0) as pcb_count
-      FROM components c
-      ORDER BY c.name ASC
-    `);
+            SELECT c.*,
+                COALESCE(req.total_requirement, 0) as total_requirement,
+                COALESCE(usage.pcb_count, 0) as pcb_count
+            FROM components c
+            LEFT JOIN (
+                SELECT pc.component_id,
+                    SUM(pc.quantity_per_pcb * CASE WHEN p.preorder_quantity > 0 THEN p.preorder_quantity ELSE 1 END) as total_requirement
+                FROM pcb_components pc JOIN pcbs p ON p.id = pc.pcb_id
+                GROUP BY pc.component_id
+            ) req ON req.component_id = c.id
+            LEFT JOIN (
+                SELECT component_id, COUNT(DISTINCT pcb_id) as pcb_count
+                FROM pcb_components
+                GROUP BY component_id
+            ) usage ON usage.component_id = c.id
+            ORDER BY c.name ASC
+        `);
 
         const components = result.rows.map(c => {
             const totalReq = parseInt(c.total_requirement);
@@ -140,7 +145,7 @@ router.post('/', authenticateToken, async (req, res) => {
         const result = await pool.query(
             `INSERT INTO components (name, part_number, working_stock, scrap_stock, monthly_requirement)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [name, part_number, working_stock || 0, scrap_stock || 0, monthly_requirement || 0]
+            [name, part_number, working_stock ?? 0, scrap_stock ?? 0, monthly_requirement ?? 0]
         );
 
         res.status(201).json(result.rows[0]);

@@ -31,6 +31,45 @@ export default function Dashboard() {
         }]
     };
 
+    const totalStock = data.summary.total_working_stock + data.summary.total_scrap_stock;
+
+    const pieOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                labels: {
+                    color: '#94a3b8',
+                    font: { family: 'Inter' },
+                    generateLabels: (chart) => {
+                        const dataset = chart.data.datasets[0];
+                        return chart.data.labels.map((label, i) => {
+                            const value = dataset.data[i];
+                            const pct = totalStock > 0 ? ((value / totalStock) * 100).toFixed(1) : '0.0';
+                            return {
+                                text: `${label}: ${value.toLocaleString()} (${pct}%)`,
+                                fillStyle: dataset.backgroundColor[i],
+                                strokeStyle: dataset.borderColor[i],
+                                lineWidth: dataset.borderWidth,
+                                hidden: false,
+                                index: i
+                            };
+                        });
+                    }
+                }
+            },
+            tooltip: {
+                callbacks: {
+                    label: (context) => {
+                        const value = context.parsed;
+                        const pct = totalStock > 0 ? ((value / totalStock) * 100).toFixed(1) : '0.0';
+                        return `${context.label}: ${value.toLocaleString()} (${pct}%)`;
+                    }
+                }
+            }
+        }
+    };
+
     const topUsedData = {
         labels: data.most_used_components.map(c => c.name.length > 12 ? c.name.substring(0, 12) + '...' : c.name),
         datasets: [{
@@ -76,7 +115,7 @@ export default function Dashboard() {
                 <div className="chart-container">
                     <h3>📊 Working vs Scrap Stock</h3>
                     <div className="chart-wrapper" style={{ height: '260px' }}>
-                        <Pie data={pieData} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#94a3b8', font: { family: 'Inter' } } } } }} />
+                        <Pie data={pieData} options={pieOptions} />
                     </div>
                 </div>
 

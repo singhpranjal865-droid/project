@@ -69,3 +69,11 @@ CREATE INDEX IF NOT EXISTS idx_pcb_components_component ON pcb_components(compon
 CREATE INDEX IF NOT EXISTS idx_procurement_log_component ON procurement_log(component_id);
 CREATE INDEX IF NOT EXISTS idx_build_log_pcb ON build_log(pcb_id);
 CREATE INDEX IF NOT EXISTS idx_scrap_log_component ON scrap_log(component_id);
+
+-- Composite indexes for sorted log queries (covers ORDER BY ... DESC LIMIT patterns)
+CREATE INDEX IF NOT EXISTS idx_procurement_log_comp_date ON procurement_log(component_id, procured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_build_log_pcb_date ON build_log(pcb_id, built_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scrap_log_comp_date ON scrap_log(component_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_build_log_date ON build_log(built_at DESC);
+CREATE INDEX IF NOT EXISTS idx_components_name ON components(name);
+CREATE INDEX IF NOT EXISTS idx_pcbs_name ON pcbs(name);

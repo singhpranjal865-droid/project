@@ -9,16 +9,24 @@ router.get('/', async (req, res) => {
     try {
         const pcbs = await pool.query('SELECT * FROM pcbs ORDER BY name ASC');
 
-        // Get components for each PCB
-        const pcbsWithComponents = await Promise.all(pcbs.rows.map(async (pcb) => {
-            const components = await pool.query(`
-        SELECT c.id, c.name, c.part_number, c.working_stock, c.scrap_stock, pc.quantity_per_pcb
-        FROM pcb_components pc
-        JOIN components c ON c.id = pc.component_id
-        WHERE pc.pcb_id = $1
-        ORDER BY c.name
-      `, [pcb.id]);
-            return { ...pcb, components: components.rows };
+        // Get all PCB-component relationships in a single query instead of N+1
+        const allComponents = await pool.query(`
+            SELECT pc.pcb_id, c.id, c.name, c.part_number, c.working_stock, c.scrap_stock, pc.quantity_per_pcb
+            FROM pcb_components pc
+            JOIN components c ON c.id = pc.component_id
+            ORDER BY c.name
+        `);
+
+        // Group components by PCB ID
+        const componentsByPcb = {};
+        for (const comp of allComponents.rows) {
+            if (!componentsByPcb[comp.pcb_id]) componentsByPcb[comp.pcb_id] = [];
+            componentsByPcb[comp.pcb_id].push(comp);
+        }
+
+        const pcbsWithComponents = pcbs.rows.map(pcb => ({
+            ...pcb,
+            components: componentsByPcb[pcb.id] || []
         }));
 
         res.json(pcbsWithComponents);
@@ -70,7 +78,7 @@ router.post('/', authenticateToken, async (req, res) => {
         // Create PCB
         const pcbResult = await client.query(
             `INSERT INTO pcbs (name, preorder_type, preorder_quantity) VALUES ($1, $2, $3) RETURNING *`,
-            [name, preorder_type || null, preorder_quantity || 0]
+            [name, preorder_type || null, preorder_quantity ?? 0]
         );
         const pcb = pcbResult.rows[0];
 
@@ -93,7 +101,7 @@ router.post('/', authenticateToken, async (req, res) => {
                         const newComp = await client.query(
                             `INSERT INTO components (name, part_number, working_stock, scrap_stock, monthly_requirement) 
                VALUES ($1, $2, $3, 0, 0) RETURNING id`,
-                            [comp.name, comp.part_number, comp.working_stock || 0]
+                            [comp.name, comp.part_number, comp.working_stock ?? 0]
                         );
                         componentId = newComp.rows[0].id;
                     }
@@ -104,7 +112,7 @@ router.post('/', authenticateToken, async (req, res) => {
                 await client.query(
                     `INSERT INTO pcb_components (pcb_id, component_id, quantity_per_pcb) 
            VALUES ($1, $2, $3) ON CONFLICT (pcb_id, component_id) DO UPDATE SET quantity_per_pcb = $3`,
-                    [pcb.id, componentId, comp.quantity_per_pcb || 1]
+                    [pcb.id, componentId, comp.quantity_per_pcb ?? 1]
                 );
             }
         }
@@ -172,7 +180,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
                         const newComp = await client.query(
                             `INSERT INTO components (name, part_number, working_stock, scrap_stock, monthly_requirement) 
                VALUES ($1, $2, $3, 0, 0) RETURNING id`,
-                            [comp.name, comp.part_number, comp.working_stock || 0]
+                            [comp.name, comp.part_number, comp.working_stock ?? 0]
                         );
                         componentId = newComp.rows[0].id;
                     }
@@ -183,7 +191,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
                 await client.query(
                     `INSERT INTO pcb_components (pcb_id, component_id, quantity_per_pcb) VALUES ($1, $2, $3)
            ON CONFLICT (pcb_id, component_id) DO UPDATE SET quantity_per_pcb = $3`,
-                    [req.params.id, componentId, comp.quantity_per_pcb || 1]
+                    [req.params.id, componentId, comp.quantity_per_pcb ?? 1]
                 );
             }
         }
@@ -225,7 +233,7 @@ router.post('/:id/build', authenticateToken, async (req, res) => {
     const client = await pool.connect();
     try {
         const { quantity } = req.body;
-        const buildQty = quantity || 1;
+        const buildQty = quantity ?? 1;
 
         if (buildQty <= 0) {
             return res.status(400).json({ error: 'Build quantity must be positive' });
@@ -267,38 +275,53 @@ router.post('/:id/build', authenticateToken, async (req, res) => {
             });
         }
 
-        // Deduct stock for each component
-        const deductions = [];
-        for (const comp of pcbComps.rows) {
-            const deductQty = comp.quantity_per_pcb * buildQty;
-            await client.query(
-                'UPDATE components SET working_stock = working_stock - $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-                [deductQty, comp.component_id]
-            );
+        // Batch deduct stock for ALL components in one UPDATE with RETURNING
+        const componentIds = pcbComps.rows.map(c => c.component_id);
+        const deductValues = pcbComps.rows
+            .map(c => `(${c.component_id}, ${c.quantity_per_pcb * buildQty})`)
+            .join(',');
 
-            // Check if component is now low stock and update counter
-            const updated = await client.query('SELECT * FROM components WHERE id = $1', [comp.component_id]);
-            const updComp = updated.rows[0];
+        const deductResult = await client.query(`
+            UPDATE components c
+            SET working_stock = c.working_stock - v.deduct_qty,
+                updated_at = CURRENT_TIMESTAMP
+            FROM (VALUES ${deductValues}) AS v(comp_id, deduct_qty)
+            WHERE c.id = v.comp_id
+            RETURNING c.id, c.working_stock AS remaining
+        `);
 
-            // Calculate total requirement
-            const reqResult = await client.query(`
-        SELECT COALESCE(SUM(pc2.quantity_per_pcb * CASE WHEN p.preorder_quantity > 0 THEN p.preorder_quantity ELSE 1 END), 0) as total_req
-        FROM pcb_components pc2 JOIN pcbs p ON p.id = pc2.pcb_id WHERE pc2.component_id = $1
-      `, [comp.component_id]);
-            const totalReq = parseInt(reqResult.rows[0].total_req);
+        // Build deductions response
+        const remainingMap = {};
+        for (const row of deductResult.rows) {
+            remainingMap[row.id] = row.remaining;
+        }
+        const deductions = pcbComps.rows.map(c => ({
+            component: c.name,
+            deducted: c.quantity_per_pcb * buildQty,
+            remaining: remainingMap[c.component_id] ?? 0
+        }));
 
-            if (totalReq > 0 && updComp.working_stock < 0.2 * totalReq) {
-                await client.query(
-                    'UPDATE components SET low_stock_count = low_stock_count + 1 WHERE id = $1',
-                    [comp.component_id]
-                );
-            }
+        // Single CTE to get all total requirements and check low stock at once
+        const lowStockCheck = await client.query(`
+            WITH req AS (
+                SELECT pc.component_id,
+                    SUM(pc.quantity_per_pcb * CASE WHEN p.preorder_quantity > 0 THEN p.preorder_quantity ELSE 1 END) AS total_req
+                FROM pcb_components pc JOIN pcbs p ON p.id = pc.pcb_id
+                WHERE pc.component_id = ANY($1::int[])
+                GROUP BY pc.component_id
+            )
+            SELECT c.id FROM components c
+            JOIN req r ON r.component_id = c.id
+            WHERE r.total_req > 0 AND c.working_stock < 0.2 * r.total_req
+        `, [componentIds]);
 
-            deductions.push({
-                component: comp.name,
-                deducted: deductQty,
-                remaining: updComp.working_stock
-            });
+        // Batch update low_stock_count for all newly low-stock components
+        if (lowStockCheck.rows.length > 0) {
+            const lowIds = lowStockCheck.rows.map(r => r.id);
+            await client.query(`
+                UPDATE components SET low_stock_count = low_stock_count + 1
+                WHERE id = ANY($1::int[])
+            `, [lowIds]);
         }
 
         // Log build
