@@ -7,6 +7,15 @@ A full-stack application for managing PCB components, inventory, and procurement
 - `client/`: React application (Vite) for the user interface.
 - `server/`: Express/Node.js backend with PostgreSQL database.
 
+## 🚀 Quick Start (Local Execution)
+
+If you have cloned the repository and want to start everything with one click:
+
+- **Windows**: Double-click the `start.bat` file in the root directory.
+- **Linux/Mac**: Run `chmod +x start.sh && ./start.sh` in the root directory.
+
+*Note: Ensure PostgreSQL is running and you have configured the `.env` file in the `server` folder.*
+
 ## Features
 
 - **Component Inventory**: Manage parts, stock levels, and technical specifications.
