@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS components (
     monthly_requirement INTEGER NOT NULL DEFAULT 0,
     low_stock_count INTEGER NOT NULL DEFAULT 0,
     procurement_count INTEGER NOT NULL DEFAULT 0,
+    source_file VARCHAR(255) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

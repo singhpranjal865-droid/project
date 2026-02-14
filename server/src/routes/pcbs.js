@@ -140,10 +140,12 @@ router.put('/:id', authenticateToken, async (req, res) => {
 
         await client.query('BEGIN');
 
+        const effectivePreorderQty = preorder_type ? (preorder_quantity ?? 0) : 0;
+
         const pcbResult = await client.query(
-            `UPDATE pcbs SET name = COALESCE($1, name), preorder_type = $2, preorder_quantity = COALESCE($3, preorder_quantity),
+            `UPDATE pcbs SET name = COALESCE($1, name), preorder_type = $2, preorder_quantity = $3,
        updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING *`,
-            [name, preorder_type || null, preorder_quantity, req.params.id]
+            [name, preorder_type || null, effectivePreorderQty, req.params.id]
         );
 
         if (pcbResult.rows.length === 0) {

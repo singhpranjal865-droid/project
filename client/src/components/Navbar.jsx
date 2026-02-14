@@ -31,7 +31,7 @@ export default function Navbar() {
                             <li key={link.to}>
                                 <Link
                                     to={link.to}
-                                    className={location.pathname === link.to ? 'active' : ''}
+                                    className={location.pathname === link.to || (link.to !== '/' && location.pathname.startsWith(link.to)) ? 'active' : ''}
                                 >
                                     {link.icon} {link.label}
                                 </Link>

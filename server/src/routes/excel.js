@@ -238,11 +238,6 @@ router.post('/process/:filename', authenticateToken, async (req, res) => {
 
             await client.query('BEGIN');
 
-            worksheet.eachRow((row, rowNumber) => {
-                if (rowNumber === 1) return; // Skip header
-                // Collect data in this loop, process after
-            });
-
             // Process rows
             for (let i = 2; i <= worksheet.rowCount; i++) {
                 const row = worksheet.getRow(i);
@@ -264,13 +259,13 @@ router.post('/process/:filename', authenticateToken, async (req, res) => {
                     if (existing.rows.length > 0) {
                         await client.query(
                             `UPDATE components SET name = $1, working_stock = $2, scrap_stock = $3, monthly_requirement = $4, updated_at = CURRENT_TIMESTAMP, source_file = $6 WHERE part_number = $5`,
-                            [finalName, workingStock, scrapStock, monthlyReq, finalPartNumber, req.file.filename]
+                            [finalName, workingStock, scrapStock, monthlyReq, finalPartNumber, filename]
                         );
                         results.updated++;
                     } else {
                         await client.query(
                             `INSERT INTO components (name, part_number, working_stock, scrap_stock, monthly_requirement, source_file) VALUES ($1, $2, $3, $4, $5, $6)`,
-                            [finalName, finalPartNumber, workingStock, scrapStock, monthlyReq, req.file.filename]
+                            [finalName, finalPartNumber, workingStock, scrapStock, monthlyReq, filename]
                         );
                         results.created++;
                     }

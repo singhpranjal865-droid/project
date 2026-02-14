@@ -55,7 +55,7 @@ export default function ExcelViewer({ filename }) {
                         {sheet.images.map((img, i) => (
                             <div key={i} style={{ border: '1px solid var(--border)', padding: '0.25rem', borderRadius: '4px', background: 'white' }}>
                                 <img
-                                    src={`data:${img.type || img.extension === 'png' ? 'image/png' : 'image/jpeg'};base64,${img.base64}`}
+                                    src={`data:image/${img.extension || 'png'};base64,${img.base64}`}
                                     alt={`Embedded content ${i + 1}`}
                                     style={{ maxWidth: '100%', maxHeight: '300px', display: 'block' }}
                                 />

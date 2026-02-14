@@ -263,11 +263,11 @@ export default function Analytics() {
                 <div className="table-wrapper">
                     <table>
                         <thead>
-                            <tr><th>Component</th><th>Part #</th><th>Working</th><th>Scrap</th><th>Low Stock Events</th><th>Procurements</th><th>Analytics</th></tr>
+                            <tr><th>Component</th><th>Part #</th><th>Working</th><th>Scrap</th><th>Used in PCBs</th><th>Analytics</th></tr>
                         </thead>
                         <tbody>
                             {data.most_used_components.length === 0 ? (
-                                <tr><td colSpan="7" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>No component data</td></tr>
+                                <tr><td colSpan="6" style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>No component data</td></tr>
                             ) : data.most_used_components.map(c => (
                                 <tr key={c.id}>
                                     <td style={{ fontWeight: 500 }}>{c.name}</td>
@@ -275,7 +275,6 @@ export default function Analytics() {
                                     <td style={{ color: 'var(--success)' }}>{c.working_stock}</td>
                                     <td style={{ color: 'var(--scrap)' }}>{c.scrap_stock}</td>
                                     <td>{parseInt(c.usage_count)}</td>
-                                    <td>-</td>
                                     <td><Link to={`/components/${c.id}/analytics`} className="btn btn-ghost btn-sm">📊 View</Link></td>
                                 </tr>
                             ))}

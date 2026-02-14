@@ -36,8 +36,7 @@ export default function Procurement() {
         else { action(); }
     };
 
-    const handleRestock = async (e) => {
-        e.preventDefault();
+    const handleRestock = async () => {
         try {
             const res = await api.post('/procurement/restock', {
                 component_id: parseInt(form.component_id),
@@ -67,7 +66,7 @@ export default function Procurement() {
                 {/* Restock Form */}
                 <div className="card" style={{ borderColor: 'rgba(34, 197, 94, 0.3)' }}>
                     <h3 style={{ color: 'var(--text-heading)', marginBottom: '1rem' }}>📦 Restock Component</h3>
-                    <form onSubmit={(e) => { e.preventDefault(); requireAuth(() => handleRestock(e)); }}>
+                    <form onSubmit={(e) => { e.preventDefault(); requireAuth(() => handleRestock()); }}>
                         <div className="form-group">
                             <label>Component</label>
                             <select className="form-control" value={form.component_id} onChange={e => setForm({ ...form, component_id: e.target.value })} required>

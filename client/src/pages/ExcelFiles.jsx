@@ -70,7 +70,7 @@ export default function ExcelFiles() {
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                     <label className="btn btn-primary btn-sm" style={{ cursor: 'pointer' }}>
                         📤 Upload Excel
-                        <input type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleUpload} />
+                        <input type="file" accept=".xlsx,.xls,.xlsm" style={{ display: 'none' }} onChange={handleUpload} />
                     </label>
                 </div>
             </div>
