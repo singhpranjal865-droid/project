@@ -19,9 +19,9 @@ export default function PCBs() {
 
     const fetchData = async () => {
         try {
-            const [pcbRes, compRes] = await Promise.all([api.get('/pcbs'), api.get('/components')]);
-            setPcbs(pcbRes.data);
-            setAllComponents(compRes.data);
+            const [pcbRes, compRes] = await Promise.all([api.get('/pcbs?limit=1000'), api.get('/components?limit=1000')]);
+            setPcbs(pcbRes.data.data || pcbRes.data);
+            setAllComponents(compRes.data.data || compRes.data);
         } catch (err) { console.error(err); }
         setLoading(false);
     };

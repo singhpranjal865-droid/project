@@ -1,28 +1,21 @@
 const express = require('express');
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
+const { validate, schemas } = require('../middleware/validate');
 
 const router = express.Router();
 
-// Helper: calculate total requirement for a component
-async function getComponentRequirement(componentId) {
-    const result = await pool.query(`
-    SELECT COALESCE(SUM(
-      pc.quantity_per_pcb * CASE 
-        WHEN p.preorder_quantity > 0 THEN p.preorder_quantity 
-        ELSE 1 
-      END
-    ), 0) as total_requirement
-    FROM pcb_components pc
-    JOIN pcbs p ON p.id = pc.pcb_id
-    WHERE pc.component_id = $1
-  `, [componentId]);
-    return parseInt(result.rows[0].total_requirement);
-}
-
-// GET /api/components - list all
+// GET /api/components - list all with pagination
 router.get('/', async (req, res) => {
     try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 50;
+        const offset = (page - 1) * limit;
+
+        // Get total count first
+        const countResult = await pool.query('SELECT COUNT(*) FROM components');
+        const total = parseInt(countResult.rows[0].count);
+
         const result = await pool.query(`
             SELECT c.*,
                 COALESCE(req.total_requirement, 0) as total_requirement,
@@ -40,7 +33,8 @@ router.get('/', async (req, res) => {
                 GROUP BY component_id
             ) usage ON usage.component_id = c.id
             ORDER BY c.name ASC
-        `);
+            LIMIT $1 OFFSET $2
+        `, [limit, offset]);
 
         const components = result.rows.map(c => {
             const totalReq = parseInt(c.total_requirement);
@@ -52,7 +46,16 @@ router.get('/', async (req, res) => {
             };
         });
 
-        res.json(components);
+        res.set('Cache-Control', 'public, max-age=5, stale-while-revalidate=10');
+        res.json({
+            data: components,
+            meta: {
+                total,
+                page,
+                limit,
+                pages: Math.ceil(total / limit)
+            }
+        });
     } catch (err) {
         console.error('Get components error:', err);
         res.status(500).json({ error: 'Server error' });
@@ -62,10 +65,9 @@ router.get('/', async (req, res) => {
 // GET /api/components/:id
 router.get('/:id', async (req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM components WHERE id = $1', [req.params.id]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Component not found' });
-        }
+        const { id } = req.params;
+        const result = await pool.query('SELECT * FROM components WHERE id = $1', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Component not found' });
         res.json(result.rows[0]);
     } catch (err) {
         console.error('Get component error:', err);
@@ -76,57 +78,40 @@ router.get('/:id', async (req, res) => {
 // GET /api/components/:id/analytics
 router.get('/:id/analytics', async (req, res) => {
     try {
-        const comp = await pool.query('SELECT * FROM components WHERE id = $1', [req.params.id]);
-        if (comp.rows.length === 0) {
-            return res.status(404).json({ error: 'Component not found' });
-        }
+        const { id } = req.params;
 
-        const component = comp.rows[0];
-        const totalReq = await getComponentRequirement(component.id);
+        const [compRes, pcbRes, procRes, scrapRes, consumptionRes] = await Promise.all([
+            pool.query('SELECT * FROM components WHERE id = $1', [id]),
+            pool.query(`
+                SELECT p.id, p.name, pc.quantity_per_pcb, p.preorder_type, p.preorder_quantity
+                FROM pcbs p JOIN pcb_components pc ON pc.pcb_id = p.id
+                WHERE pc.component_id = $1
+            `, [id]),
+            pool.query('SELECT * FROM procurement_log WHERE component_id = $1 ORDER BY procured_at DESC LIMIT 50', [id]),
+            pool.query('SELECT * FROM scrap_log WHERE component_id = $1 ORDER BY created_at DESC LIMIT 50', [id]),
+            pool.query(`
+                SELECT bl.built_at::date as date, SUM(bl.quantity_built * pc.quantity_per_pcb) as consumed
+                FROM build_log bl
+                JOIN pcb_components pc ON pc.pcb_id = bl.pcb_id
+                WHERE pc.component_id = $1 AND bl.built_at >= CURRENT_DATE - INTERVAL '6 months'
+                GROUP BY bl.built_at::date ORDER BY date ASC
+            `, [id])
+        ]);
 
-        // PCBs using this component
-        const pcbs = await pool.query(`
-      SELECT p.id, p.name, pc.quantity_per_pcb, p.preorder_type, p.preorder_quantity
-      FROM pcb_components pc
-      JOIN pcbs p ON p.id = pc.pcb_id
-      WHERE pc.component_id = $1
-      ORDER BY p.name
-    `, [req.params.id]);
+        if (compRes.rows.length === 0) return res.status(404).json({ error: 'Component not found' });
 
-        // Procurement history
-        const procurements = await pool.query(`
-      SELECT * FROM procurement_log 
-      WHERE component_id = $1 
-      ORDER BY procured_at DESC LIMIT 20
-    `, [req.params.id]);
-
-        // Scrap history
-        const scraps = await pool.query(`
-      SELECT * FROM scrap_log
-      WHERE component_id = $1
-      ORDER BY created_at DESC LIMIT 20
-    `, [req.params.id]);
-
-        // Build consumption (how many units consumed via builds)
-        const consumption = await pool.query(`
-      SELECT bl.built_at::date as date, SUM(bl.quantity_built * pc.quantity_per_pcb) as consumed
-      FROM build_log bl
-      JOIN pcb_components pc ON pc.pcb_id = bl.pcb_id
-      WHERE pc.component_id = $1
-      GROUP BY bl.built_at::date
-      ORDER BY date DESC LIMIT 30
-    `, [req.params.id]);
+        const component = compRes.rows[0];
+        // Calculate dynamic fields
+        const totalReq = pcbRes.rows.reduce((sum, p) => sum + (p.quantity_per_pcb * (p.preorder_quantity || 1)), 0);
+        component.total_requirement = totalReq;
+        component.low_stock = totalReq > 0 && component.working_stock < 0.2 * totalReq;
 
         res.json({
-            component: {
-                ...component,
-                total_requirement: totalReq,
-                low_stock: totalReq > 0 && component.working_stock < 0.2 * totalReq
-            },
-            pcbs: pcbs.rows,
-            procurement_history: procurements.rows,
-            scrap_history: scraps.rows,
-            consumption_history: consumption.rows
+            component,
+            pcbs: pcbRes.rows,
+            procurement_history: procRes.rows,
+            scrap_history: scrapRes.rows,
+            consumption_history: consumptionRes.rows
         });
     } catch (err) {
         console.error('Component analytics error:', err);
@@ -134,51 +119,42 @@ router.get('/:id/analytics', async (req, res) => {
     }
 });
 
-// POST /api/components - create (protected)
-router.post('/', authenticateToken, async (req, res) => {
+// POST /api/components - create new component (protected)
+router.post('/', authenticateToken, validate(schemas.componentCreate), async (req, res) => {
     try {
         const { name, part_number, working_stock, scrap_stock, monthly_requirement } = req.body;
-        if (!name || !part_number) {
-            return res.status(400).json({ error: 'Name and part number required' });
-        }
 
         const result = await pool.query(
-            `INSERT INTO components (name, part_number, working_stock, scrap_stock, monthly_requirement)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [name, part_number, working_stock ?? 0, scrap_stock ?? 0, monthly_requirement ?? 0]
+            'INSERT INTO components (name, part_number, working_stock, scrap_stock, monthly_requirement) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [name, part_number, working_stock, scrap_stock, monthly_requirement]
         );
-
-        res.status(201).json(result.rows[0]);
+        res.json(result.rows[0]);
     } catch (err) {
-        if (err.code === '23505') {
-            return res.status(400).json({ error: 'Part number already exists' });
+        if (err.code === '23505') { // unique_violation
+            return res.status(400).json({ error: 'Part number or name already exists' });
         }
         console.error('Create component error:', err);
         res.status(500).json({ error: 'Server error' });
     }
 });
 
-// PUT /api/components/:id - update (protected)
-router.put('/:id', authenticateToken, async (req, res) => {
+// PUT /api/components/:id - update component (protected)
+router.put('/:id', authenticateToken, validate(schemas.componentUpdate), async (req, res) => {
     try {
+        const { id } = req.params;
         const { name, part_number, working_stock, scrap_stock, monthly_requirement } = req.body;
+
         const result = await pool.query(
-            `UPDATE components 
-       SET name = COALESCE($1, name), 
-           part_number = COALESCE($2, part_number),
-           working_stock = COALESCE($3, working_stock),
-           scrap_stock = COALESCE($4, scrap_stock),
-           monthly_requirement = COALESCE($5, monthly_requirement),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $6 RETURNING *`,
-            [name, part_number, working_stock, scrap_stock, monthly_requirement, req.params.id]
+            'UPDATE components SET name = COALESCE($1, name), part_number = COALESCE($2, part_number), working_stock = COALESCE($3, working_stock), scrap_stock = COALESCE($4, scrap_stock), monthly_requirement = COALESCE($5, monthly_requirement), updated_at = CURRENT_TIMESTAMP WHERE id = $6 RETURNING *',
+            [name, part_number, working_stock, scrap_stock, monthly_requirement, id]
         );
 
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Component not found' });
-        }
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Component not found' });
         res.json(result.rows[0]);
     } catch (err) {
+        if (err.code === '23505') {
+            return res.status(400).json({ error: 'Part number or name matches another component' });
+        }
         console.error('Update component error:', err);
         res.status(500).json({ error: 'Server error' });
     }
@@ -187,57 +163,54 @@ router.put('/:id', authenticateToken, async (req, res) => {
 // DELETE /api/components/:id (protected)
 router.delete('/:id', authenticateToken, async (req, res) => {
     try {
-        const result = await pool.query('DELETE FROM components WHERE id = $1 RETURNING *', [req.params.id]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Component not found' });
-        }
-        res.json({ message: 'Component deleted', component: result.rows[0] });
+        const { id } = req.params;
+        const result = await pool.query('DELETE FROM components WHERE id = $1 RETURNING id', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Component not found' });
+        res.json({ message: 'Component deleted' });
     } catch (err) {
         console.error('Delete component error:', err);
         res.status(500).json({ error: 'Server error' });
     }
 });
 
-// POST /api/components/:id/scrap - move working stock to scrap (protected)
-router.post('/:id/scrap', authenticateToken, async (req, res) => {
+// POST /api/components/:id/scrap - move stock to scrap (protected)
+router.post('/:id/scrap', authenticateToken, validate(schemas.componentScrap), async (req, res) => {
     const client = await pool.connect();
     try {
+        const { id } = req.params;
         const { quantity, reason } = req.body;
-        if (!quantity || quantity <= 0) {
-            return res.status(400).json({ error: 'Valid quantity required' });
-        }
 
         await client.query('BEGIN');
 
-        const comp = await client.query('SELECT * FROM components WHERE id = $1 FOR UPDATE', [req.params.id]);
-        if (comp.rows.length === 0) {
+        // Check stock
+        const check = await client.query('SELECT working_stock FROM components WHERE id = $1 FOR UPDATE', [id]);
+        if (check.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Component not found' });
         }
 
-        const component = comp.rows[0];
-        if (component.working_stock < quantity) {
+        if (check.rows[0].working_stock < quantity) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ error: 'Insufficient working stock to scrap' });
+            return res.status(400).json({ error: 'Insufficient working stock' });
         }
 
+        // Move stock
         await client.query(
-            `UPDATE components SET working_stock = working_stock - $1, scrap_stock = scrap_stock + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-            [quantity, req.params.id]
+            'UPDATE components SET working_stock = working_stock - $1, scrap_stock = scrap_stock + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            [quantity, id]
         );
 
+        // Log
         await client.query(
-            `INSERT INTO scrap_log (component_id, quantity, reason) VALUES ($1, $2, $3)`,
-            [req.params.id, quantity, reason || 'No reason specified']
+            'INSERT INTO scrap_log (component_id, quantity, reason) VALUES ($1, $2, $3)',
+            [id, quantity, reason]
         );
 
         await client.query('COMMIT');
-
-        const updated = await pool.query('SELECT * FROM components WHERE id = $1', [req.params.id]);
-        res.json(updated.rows[0]);
+        res.json({ message: ` moved ${quantity} units to scrap` });
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('Scrap component error:', err);
+        console.error('Scrap error:', err);
         res.status(500).json({ error: 'Server error' });
     } finally {
         client.release();

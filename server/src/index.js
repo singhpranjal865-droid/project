@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const compression = require('compression');
+const helmet = require('helmet');
+const morgan = require('morgan');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config();
@@ -11,6 +13,8 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
+app.use(helmet());
+app.use(morgan('dev'));
 app.use(compression());
 app.use(cors());
 app.use(express.json());

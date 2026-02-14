@@ -21,7 +21,7 @@ export default function Components() {
 
 
     const fetchComponents = () => {
-        api.get('/components').then(res => setComponents(res.data)).catch(console.error).finally(() => setLoading(false));
+        api.get('/components?limit=1000').then(res => setComponents(res.data.data || res.data)).catch(console.error).finally(() => setLoading(false));
     };
 
 

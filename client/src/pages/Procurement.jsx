@@ -18,13 +18,13 @@ export default function Procurement() {
     const fetchData = async () => {
         try {
             const [compRes, procRes, scrapRes] = await Promise.all([
-                api.get('/components'),
-                api.get('/procurement/log'),
-                api.get('/procurement/scrap-log')
+                api.get('/components?limit=1000'),
+                api.get('/procurement/log?limit=1000'),
+                api.get('/procurement/scrap-log?limit=1000')
             ]);
-            setComponents(compRes.data);
-            setProcLog(procRes.data);
-            setScrapLog(scrapRes.data);
+            setComponents(compRes.data.data || compRes.data);
+            setProcLog(procRes.data.data || procRes.data);
+            setScrapLog(scrapRes.data.data || scrapRes.data);
         } catch (err) { console.error(err); }
         setLoading(false);
     };
